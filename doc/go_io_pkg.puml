@@ -92,7 +92,7 @@ package io {
     5. 定位到文件开始之前是一个异常；定位到其他任何位置都是合法的，但是IO操作的结果是未定义的。
     end note
 
-
+    ' ==============================================
     together {
         interface ReaderFrom
         interface WriterTo
@@ -110,11 +110,11 @@ package io {
     1. （把自己的数据）写到w
     end note
 
+    ' ==============================================
     together {
         interface ReaderAt
         interface WriterAt
     }
-
 
     interface ReaderAt {
         +ReadAt(p []byte, off int64) (n int, err error)
@@ -130,6 +130,44 @@ package io {
     ReaderAt -[hidden]-> WriterTo 
     ReadWriteCloser -[hidden]-> ReaderAt
     ReadWriteCloser -[hidden]-> WriterAt
+
+    ' ==============================================
+    together {
+        interface ByteReader
+        interface ByteScanner
+        interface ByteWriter
+    }
+    interface ByteReader {
+        +ReadByte() (byte, error)
+    }
+    note left: 读一字节
+    interface ByteScanner {
+        +UnreadByte() error
+    }
+    ByteReader --* ByteScanner
+    note left: UnreadByte 查看下一个byte；\n连续调用可能返回异常
+
+    interface ByteWriter {
+        +WriteByte(c byte) error
+    }
+     
+    ' ==============================================
+    together {
+        interface RuneReader
+        interface RuneScanner
+    }
+    interface RuneReader {
+        +ReadRune() (r rune, size int, err error)
+    }
+    interface RuneScanner {
+        +UnreadRune() error
+    }
+    RuneReader --* RuneScanner
+    
+    ' ==============================================
+    interface StringWriter {
+        +WriteString(s stirng) (n int, err error)
+    }
 }
 
 @enduml
