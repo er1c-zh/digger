@@ -1,0 +1,135 @@
+@startuml go_io_pkg
+scale 750 width
+package io {
+    together {
+        ' base
+        interface Reader
+        interface Writer
+    }
+    together {
+        ' stream
+        interface Closer
+    }
+    together {
+        ' file
+        interface Seeker
+    }
+
+    interface ReadWriter
+    Reader --* ReadWriter
+    Writer --* ReadWriter
+    
+    interface ReadCloser
+    Reader --* ReadCloser
+    Closer --* ReadCloser
+    
+    interface WriteCloser
+    Writer --* WriteCloser
+    Closer --* WriteCloser
+    
+    interface ReadWriteCloser
+    Reader --* ReadWriteCloser
+    Writer --* ReadWriteCloser
+    Closer --* ReadWriteCloser
+    
+    interface ReadSeeker
+    Reader --* ReadSeeker
+    Seeker --* ReadSeeker
+    
+    interface WriteSeeker
+    Writer --* WriteSeeker
+    Seeker --* WriteSeeker
+    
+    interface ReadWriteSeeker
+    Reader --* ReadWriteSeeker
+    Writer --* ReadWriteSeeker
+    Seeker --* ReadWriteSeeker
+    
+    interface Reader {
+        +Read(p []byte) (n int, err error)
+    } 
+    note top of Reader
+    1. 对读方法的包装
+    2. 读最多n个byte到p中
+    3. 立即返回现有的数据，不阻塞等待
+    4. 如果读到一些数据后发生异常，可能这次或下次调用返回异常
+    5. 实现该接口是不鼓励返回 (0, nil)
+    6. 调用时遇到 (0, nil) 应认为是无事发生，不应当认为是 EOF
+    7. 实现该接口时，不应该保留p
+    end note
+    
+    interface Writer {
+        +Write(p []byte) (n int, err error)
+    }
+    note top of Writer
+    1. 对写方法的包装
+    2. 接口返回向目标数据流写入的字节数 n
+    3. 如果发生异常，返回err
+    4. 实现上，如果返回的n小于len(p)，那么一定有一个err
+    5. 实现一定不能修改p中的数据，临时修改也不行
+    6. 实现该接口时，不应该保留p
+    end note
+    
+    interface Closer {
+        +Close() error
+    }
+    note top of Closer
+    1. 对Close的包装
+    2. 重复调用是未定义行为
+    end note
+    
+    interface Seeker {
+        +Seek(offser int64, whence int) (n int64, err error)
+    }
+    note top of Seeker
+    1. 对seek方法的包装
+    2. 用于定位下次读取/写入的位置(from(whence) + offset)
+    3. whence有三种情况
+        3.1 SeekStart 文件开始
+        3.2 SeekCurrent 当前位置
+        3.3 SeekEnd 文件结束
+    4. 返回 n-与文件开始的offset err-异常
+    5. 定位到文件开始之前是一个异常；定位到其他任何位置都是合法的，但是IO操作的结果是未定义的。
+    end note
+
+
+    together {
+        interface ReaderFrom
+        interface WriterTo
+    }
+    interface ReaderFrom {
+        +ReadFrom(r Reader) (n int64, err error)
+    }
+    note left of ReaderFrom 
+    1. 从r读，（写到自己里面）
+    end note
+    interface WriterTo {
+        +WriteTo(w Writer) (n int64, err error)
+    }
+    note left of WriterTo
+    1. （把自己的数据）写到w
+    end note
+
+    together {
+        interface ReaderAt
+        interface WriterAt
+    }
+
+
+    interface ReaderAt {
+        +ReadAt(p []byte, off int64) (n int, err error)
+    }
+    note left: 从off开始读
+    interface WriterAt {
+        +WriteAt(p []byte, off int64) (n int, err error)
+    }
+    note left: 写到off
+    
+    ' format
+    ReaderAt -[hidden]-> ReaderFrom
+    ReaderAt -[hidden]-> WriterTo 
+    ReadWriteCloser -[hidden]-> ReaderAt
+    ReadWriteCloser -[hidden]-> WriterAt
+}
+
+@enduml
