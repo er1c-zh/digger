@@ -1,12 +1,13 @@
 package main
 
 import (
+	"github.com/er1c-zh/digger/proxy"
 	boot "github.com/er1c-zh/go-now/go_boot"
 	"github.com/er1c-zh/go-now/log"
 )
 
 func main() {
-	digger := NewDigger()
+	digger := proxy.NewDigger()
 	boot.RegisterExitHandlers(func() {
 		digger.GracefullyQuit()
 	})

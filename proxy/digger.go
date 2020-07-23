@@ -1,4 +1,4 @@
-package main
+package proxy
 
 import (
 	"bufio"
@@ -8,23 +8,29 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
-	"sync/atomic"
-	"time"
 )
 
 type Digger struct {
 	Address        string
 	Port           int16
-	currentConnCnt int64
-	done chan struct{}
+
+	done           chan struct{}
+	initOnce 	sync.Once
+
+	s statistics
+
+	noProxyHandler *noProxyHandler
 }
 
 func NewDigger() *Digger {
 	return &Digger{
-		Address: "0.0.0.0",
-		Port:    8080,
-		currentConnCnt: 0,
-		done: make(chan struct{}),
+		Address:        "0.0.0.0",
+		Port:           8080,
+		done:           make(chan struct{}),
+		s: statistics{
+			CurrentConnCnt: 0,
+		},
+		noProxyHandler: NewNoProxyHandler(),
 	}
 }
 
@@ -35,38 +41,26 @@ func (d *Digger) GracefullyQuit() {
 }
 
 func (d *Digger) Run() {
-	go func() {
-		t := time.NewTicker(time.Second)
-		for {
-			select {
-			case <- t.C:
-				log.Info("[static]current cnt: %d", d.currentConnCnt)
-			case <-d.done:
-				t.Stop()
-				return
-			}
+	d.initOnce.Do(func() {
+		d.LogStatisticsInfoPerSecond()
+		d.noProxyHandler.Register("/statistics", d.s.BuildHandler())
+
+		log.Info("Digger running!")
+
+		err := http.ListenAndServe(d.Address+":"+strconv.FormatInt(int64(d.Port), 10), d)
+		if err != nil {
+			log.Fatal("ListenAndServe fail: %s", err.Error())
+			return
 		}
-	}()
-	log.Info("Digger running!")
-
-	err := http.ListenAndServe(d.Address + ":" + strconv.FormatInt(int64(d.Port), 10), &simpleHandler{d: d})
-	if err != nil {
-		log.Fatal("ListenAndServe fail: %s", err.Error())
 		return
-	}
-	return
+	})
 }
 
-type simpleHandler struct{
-	d *Digger
-}
-
-func (s *simpleHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	atomic.AddInt64(&s.d.currentConnCnt, 1)
+func (d *Digger) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	d.AddCurConn()
 	defer func() {
-		atomic.AddInt64(&s.d.currentConnCnt, -1)
+		d.MinusCurConn()
 	}()
-	//log.Info("[%s][%s]%s", req.Method, req.Host, req.URL.String())
 	if req.Method == "CONNECT" {
 		// https
 		// try hijack connection to client
@@ -89,14 +83,14 @@ func (s *simpleHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		/*
-		tlsToClient := tls.Server(connToClient, &tls.Config{InsecureSkipVerify: true})
-		defer tlsToClient.Close()
-		if err := tlsToClient.Handshake(); err != nil {
-			log.Error("shake hand with client fail: %s", err.Error())
-			return
-		}
+			tlsToClient := tls.Server(connToClient, &tls.Config{InsecureSkipVerify: true})
+			defer tlsToClient.Close()
+			if err := tlsToClient.Handshake(); err != nil {
+				log.Error("shake hand with client fail: %s", err.Error())
+				return
+			}
 
-		 */
+		*/
 
 		addr := req.URL.Host
 		if req.URL.Port() == "" {
@@ -109,22 +103,22 @@ func (s *simpleHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		defer connToServer.Close()
 		/*
-		tlsToServer := tls.Client(connToServer, &tls.Config{InsecureSkipVerify: true})
-		defer tlsToServer.Close()
-		if err := tlsToServer.Handshake(); err != nil {
-			log.Error("shake hand with server fail: %s", err.Error())
-			return
-		}
-		_, err = io.Copy(tlsToServer, tlsToClient)
-		if err != nil {
-			log.Error("io.Copy client to server fail: %s", err.Error())
-			return
-		}
-		_, err = io.Copy(tlsToClient, tlsToServer)
-		if err != nil {
-			log.Error("io.Copy server to client fail: %s", err.Error())
-			return
-		}
+			tlsToServer := tls.Client(connToServer, &tls.Config{InsecureSkipVerify: true})
+			defer tlsToServer.Close()
+			if err := tlsToServer.Handshake(); err != nil {
+				log.Error("shake hand with server fail: %s", err.Error())
+				return
+			}
+			_, err = io.Copy(tlsToServer, tlsToClient)
+			if err != nil {
+				log.Error("io.Copy client to server fail: %s", err.Error())
+				return
+			}
+			_, err = io.Copy(tlsToClient, tlsToServer)
+			if err != nil {
+				log.Error("io.Copy server to client fail: %s", err.Error())
+				return
+			}
 		*/
 		var wg sync.WaitGroup
 		var errClient, errServer error
@@ -141,8 +135,7 @@ func (s *simpleHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	} else {
 		if !req.URL.IsAbs() {
-			// todo no proxy request
-			http.Error(w, "not support no-proxy-request", http.StatusInternalServerError)
+			d.noProxyHandler.ServeHTTP(w, req)
 			return
 		} else {
 			log.Info("[is abs: %t][host(%s)][port(%s)]connect to (%s)", req.URL.IsAbs(), req.URL.Host, req.URL.Port(), req.URL.Host)
