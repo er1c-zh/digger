@@ -12,11 +12,11 @@ import (
 func (d *Digger) BuildHttpHandler() func(w http.ResponseWriter, req *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
 		record := _record{
-			Req:         recordReqFromHttpReq(req),
-			Resp:        nil,
-			tStart:      time.Now(),
-			tReqFinish:  time.Time{},
-			tRespFinish: time.Time{},
+			Req:            recordReqFromHttpReq(req),
+			Resp:           nil,
+			TimeStart:      time.Now(),
+			TimeReqFinish:  time.Time{},
+			TimeRespFinish: time.Time{},
 		}
 		defer func() {
 			d.history.Add(record)
@@ -39,7 +39,7 @@ func (d *Digger) BuildHttpHandler() func(w http.ResponseWriter, req *http.Reques
 			log.Error("write fail: %s", err.Error())
 			return
 		}
-		record.tReqFinish = time.Now()
+		record.TimeReqFinish = time.Now()
 		resp, err := http.ReadResponse(bufio.NewReader(conn), req)
 		if err != nil {
 			log.Error("ReadResponse fail: %s", err.Error())

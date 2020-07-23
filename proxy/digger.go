@@ -10,12 +10,12 @@ import (
 )
 
 type Digger struct {
-	Address        string
-	Port           int16
-	HistorySize	int64
+	Address     string
+	Port        int16
+	HistorySize int64
 
-	done           chan struct{}
-	initOnce 	sync.Once
+	done     chan struct{}
+	initOnce sync.Once
 
 	s statistics
 
@@ -27,13 +27,14 @@ type Digger struct {
 
 func NewDigger() *Digger {
 	return &Digger{
-		Address:        "0.0.0.0",
-		Port:           8080,
-		done:           make(chan struct{}),
+		Address: "0.0.0.0",
+		Port:    8080,
+		done:    make(chan struct{}),
 		s: statistics{
 			CurrentConnCnt: 0,
 		},
 		noProxyHandler: NewNoProxyHandler(),
+		history:        newRecordList(),
 	}
 }
 

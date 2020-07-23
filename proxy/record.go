@@ -10,16 +10,16 @@ import (
 )
 
 type _recordReq struct {
-	Method string
-	URL *url.URL
-	Proto      string // "HTTP/1.0"
-	ProtoMajor int    // 1
-	ProtoMinor int    // 0
-	Header http.Header
+	Method        string
+	URL           *url.URL
+	Proto         string // "HTTP/1.0"
+	ProtoMajor    int    // 1
+	ProtoMinor    int    // 0
+	Header        http.Header
 	ContentLength int64
-	Host string
-	RemoteAddr string
-	RequestURI string
+	Host          string
+	RemoteAddr    string
+	RequestURI    string
 }
 
 func recordReqFromHttpReq(src *http.Request) *_recordReq {
@@ -36,22 +36,28 @@ func recordReqFromHttpReq(src *http.Request) *_recordReq {
 		RequestURI:    src.RequestURI,
 	}
 }
-type _recordResp struct {
 
+type _recordResp struct {
 }
 
 type _record struct {
 	Req  *_recordReq
 	Resp *_recordResp
 
-	tStart      time.Time
-	tReqFinish  time.Time
-	tRespFinish time.Time
+	TimeStart      time.Time
+	TimeReqFinish  time.Time
+	TimeRespFinish time.Time
 }
 
 type _recordList struct {
-	mtx sync.Mutex
+	mtx  sync.Mutex
 	data []_record
+}
+
+func newRecordList() _recordList {
+	return _recordList{
+		data: make([]_record, 0),
+	}
 }
 
 func (l *_recordList) BuildHandler() func(writer http.ResponseWriter, _ *http.Request) {
@@ -74,4 +80,3 @@ func (l *_recordList) Add(r _record) {
 	defer l.mtx.Unlock()
 	l.data = append(l.data, r)
 }
-
