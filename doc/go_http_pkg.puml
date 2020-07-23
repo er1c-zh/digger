@@ -1,0 +1,49 @@
+@startuml go_http_pkg
+' url
+class URL {
+	Scheme string
+	Opaque string
+	User *Userinfo
+	Host string
+	Path string
+	RawPath string
+	ForceQuery bool
+	RawQuery string
+	Fragment string
+}
+
+class Header {
+    Header map[string][]string
+}
+
+class Values {
+    Values map[string][]string
+}
+
+class Request {
+    Method string
+    URL URL
+    Proto string
+    ProtoMajor int
+    ProtoMinor int
+    Header Header
+    Body io.ReadCloser
+    +GetBody func() (io.ReadCloser, error) // 返回一个新的Body拷贝
+    ContentLength int64
+    TransferEncoding []string
+    Close bool
+    Host string
+    Form url.Values
+    PostForm url.Values
+    MultipartForm *multipart.Form
+}
+
+Request o-- URL
+Request o-- Header
+Request o-- Values
+
+interface Handler {
+    +ServeHTTP(ResponseWriter, *Request)
+}
+
+@enduml
