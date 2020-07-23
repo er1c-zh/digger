@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bufio"
 	"github.com/er1c-zh/go-now/log"
 	"io"
 	"net"
@@ -13,6 +12,7 @@ import (
 type Digger struct {
 	Address        string
 	Port           int16
+	HistorySize	int64
 
 	done           chan struct{}
 	initOnce 	sync.Once
@@ -20,6 +20,9 @@ type Digger struct {
 	s statistics
 
 	noProxyHandler *noProxyHandler
+
+	history _recordList
+	running []_record
 }
 
 func NewDigger() *Digger {
@@ -44,6 +47,7 @@ func (d *Digger) Run() {
 	d.initOnce.Do(func() {
 		d.LogStatisticsInfoPerSecond()
 		d.noProxyHandler.Register("/statistics", d.s.BuildHandler())
+		d.noProxyHandler.Register("/history", d.history.BuildHandler())
 
 		log.Info("Digger running!")
 
@@ -138,45 +142,7 @@ func (d *Digger) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			d.noProxyHandler.ServeHTTP(w, req)
 			return
 		} else {
-			log.Info("[is abs: %t][host(%s)][port(%s)]connect to (%s)", req.URL.IsAbs(), req.URL.Host, req.URL.Port(), req.URL.Host)
-			addr := req.URL.Host
-			if req.URL.Port() == "" {
-				addr += ":80"
-			}
-			conn, err := net.Dial("tcp", addr)
-			if err != nil {
-				log.Error("dial (%s) fail: %s", addr, err.Error())
-				return
-			}
-			defer func() {
-				_ = conn.Close()
-			}()
-			err = req.Write(conn)
-			if err != nil {
-				log.Error("write fail: %s", err.Error())
-				return
-			}
-			resp, err := http.ReadResponse(bufio.NewReader(conn), req)
-			if err != nil {
-				log.Error("ReadResponse fail: %s", err.Error())
-				return
-			}
-			defer func() {
-				_ = resp.Body.Close()
-			}()
-			for k, v := range resp.Header {
-				for _, _v := range v {
-					w.Header().Add(k, _v)
-				}
-			}
-			w.WriteHeader(resp.StatusCode)
-			n, err := io.Copy(w, resp.Body)
-			if err != nil {
-				log.Error("io.Copy fail: %s", err.Error())
-				return
-			}
-			log.Info("io.Copy cnt: %d", n)
-			return
+			d.BuildHttpHandler()(w, req)
 		}
 	}
 }
