@@ -21,7 +21,7 @@ type _recordReq struct {
 	Host          string
 	RemoteAddr    string
 	RequestURI    string
-	BodyOrigin    []byte
+	BodyOrigin    []byte `json:"body_origin;omitempty"`
 	// todo parse body
 }
 
@@ -62,7 +62,7 @@ func recordReqFromHttpReq(src *http.Request) (*_recordReq, error) {
 	return r, nil
 }
 
-func (r _recordReq) Write(p []byte) (n int, err error) {
+func (r *_recordReq) Write(p []byte) (n int, err error) {
 	r.BodyOrigin = append(r.BodyOrigin, p...)
 	return len(p), nil
 }
