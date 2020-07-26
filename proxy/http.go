@@ -11,8 +11,13 @@ import (
 
 func (d *Digger) BuildHttpHandler() func(w http.ResponseWriter, req *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
+		reqRecord, err := recordReqFromHttpReq(req)
+		if err != nil {
+			log.Error("recordReqFromHttpReq fail: %s", err.Error())
+			return
+		}
 		record := _record{
-			Req:            recordReqFromHttpReq(req),
+			Req:            reqRecord,
 			Resp:           nil,
 			TimeStart:      time.Now(),
 			TimeReqFinish:  time.Time{},
@@ -45,8 +50,7 @@ func (d *Digger) BuildHttpHandler() func(w http.ResponseWriter, req *http.Reques
 			log.Error("ReadResponse fail: %s", err.Error())
 			return
 		}
-		// todo
-		record.Resp = &_recordResp{}
+		record.Resp = recordRespFromHttpReq(resp)
 		defer func() {
 			_ = resp.Body.Close()
 		}()

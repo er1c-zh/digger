@@ -7,8 +7,9 @@ fmt:
 
 build:
 	make fmt
-	[ -f output ] || mkdir output
+	test -d output || mkdir output
 	go build -o output/digger
 
 clean:
-	rm -r ./output
+	test -d output && rm -r ./output
+

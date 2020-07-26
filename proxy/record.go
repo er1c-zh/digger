@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"github.com/er1c-zh/go-now/log"
+	"io"
 	"net/http"
 	"net/url"
 	"sync"
@@ -12,18 +13,40 @@ import (
 type _recordReq struct {
 	Method        string
 	URL           *url.URL
-	Proto         string // "HTTP/1.0"
-	ProtoMajor    int    // 1
-	ProtoMinor    int    // 0
+	Proto         string
+	ProtoMajor    int
+	ProtoMinor    int
 	Header        http.Header
 	ContentLength int64
 	Host          string
 	RemoteAddr    string
 	RequestURI    string
+	BodyOrigin    []byte
+	// todo parse body
 }
 
-func recordReqFromHttpReq(src *http.Request) *_recordReq {
-	return &_recordReq{
+type teeReadCloser struct {
+	originReader io.ReadCloser
+	tee io.Reader
+}
+
+func TeeReadCloser(r io.ReadCloser, w io.Writer) io.ReadCloser {
+	return &teeReadCloser{
+		tee: io.TeeReader(r, w),
+		originReader: r,
+	}
+}
+
+func (t *teeReadCloser) Read(p []byte) (n int, err error) {
+	return t.tee.Read(p)
+}
+
+func (t *teeReadCloser) Close() error {
+	return t.originReader.Close()
+}
+
+func recordReqFromHttpReq(src *http.Request) (*_recordReq, error) {
+	r := &_recordReq{
 		Method:        src.Method,
 		URL:           src.URL,
 		Proto:         src.Proto,
@@ -35,9 +58,37 @@ func recordReqFromHttpReq(src *http.Request) *_recordReq {
 		RemoteAddr:    src.RemoteAddr,
 		RequestURI:    src.RequestURI,
 	}
+	src.Body = TeeReadCloser(src.Body, r)
+	return r, nil
+}
+
+func (r _recordReq) Write(p []byte) (n int, err error) {
+	r.BodyOrigin = append(r.BodyOrigin, p...)
+	return len(p), nil
 }
 
 type _recordResp struct {
+	Status     string
+	StatusCode int
+	Proto      string
+	ProtoMajor int
+	ProtoMinor int
+	Header http.Header
+	ContentLength int64
+	BodyOrigin []byte
+}
+
+func recordRespFromHttpReq(src *http.Response) *_recordResp {
+	return &_recordResp{
+		Status:        src.Status,
+		StatusCode:    src.StatusCode,
+		Proto:         src.Proto,
+		ProtoMajor:    src.ProtoMajor,
+		ProtoMinor:    src.ProtoMinor,
+		Header:        src.Header,
+		ContentLength: src.ContentLength,
+		BodyOrigin:    nil,
+	}
 }
 
 type _record struct {
