@@ -27,12 +27,12 @@ type _recordReq struct {
 
 type teeReadCloser struct {
 	originReader io.ReadCloser
-	tee io.Reader
+	tee          io.Reader
 }
 
 func TeeReadCloser(r io.ReadCloser, w io.Writer) io.ReadCloser {
 	return &teeReadCloser{
-		tee: io.TeeReader(r, w),
+		tee:          io.TeeReader(r, w),
 		originReader: r,
 	}
 }
@@ -68,18 +68,18 @@ func (r *_recordReq) Write(p []byte) (n int, err error) {
 }
 
 type _recordResp struct {
-	Status     string
-	StatusCode int
-	Proto      string
-	ProtoMajor int
-	ProtoMinor int
-	Header http.Header
+	Status        string
+	StatusCode    int
+	Proto         string
+	ProtoMajor    int
+	ProtoMinor    int
+	Header        http.Header
 	ContentLength int64
-	BodyOrigin []byte
+	BodyOrigin    []byte
 }
 
-func recordRespFromHttpReq(src *http.Response) *_recordResp {
-	return &_recordResp{
+func recordRespFromHttpResp(src *http.Response) (*_recordResp, error) {
+	r := &_recordResp{
 		Status:        src.Status,
 		StatusCode:    src.StatusCode,
 		Proto:         src.Proto,
@@ -89,6 +89,13 @@ func recordRespFromHttpReq(src *http.Response) *_recordResp {
 		ContentLength: src.ContentLength,
 		BodyOrigin:    nil,
 	}
+	src.Body = TeeReadCloser(src.Body, r)
+	return r, nil
+}
+
+func (r *_recordResp) Write(p []byte) (n int, err error) {
+	r.BodyOrigin = append(r.BodyOrigin, p...)
+	return len(p), nil
 }
 
 type _record struct {
@@ -117,6 +124,7 @@ func (l *_recordList) BuildHandler() func(writer http.ResponseWriter, _ *http.Re
 		writer.Header().Add("content-type", "charset=utf8")
 		writer.WriteHeader(http.StatusOK)
 		j, _ := json.Marshal(l.data)
+		log.Debug("==%s", string(j))
 		_, err := writer.Write(j)
 		if err != nil {
 			log.Error("statistics write to writer fail: %s", err.Error())

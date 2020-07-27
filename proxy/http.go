@@ -50,10 +50,14 @@ func (d *Digger) BuildHttpHandler() func(w http.ResponseWriter, req *http.Reques
 			log.Error("ReadResponse fail: %s", err.Error())
 			return
 		}
-		record.Resp = recordRespFromHttpReq(resp)
+		record.Resp, err = recordRespFromHttpResp(resp)
 		defer func() {
 			_ = resp.Body.Close()
 		}()
+		if err != nil {
+			log.Error("recordRespFromHttpResp fail: %s", err.Error())
+			return
+		}
 		for k, v := range resp.Header {
 			for _, _v := range v {
 				w.Header().Add(k, _v)
