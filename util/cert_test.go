@@ -8,6 +8,6 @@ func TestGenerateCertificate(t *testing.T) {
 		t.Error(err)
 		return
 	}
-	t.Logf("cert: %s", cert.Cert.String())
-	t.Logf("private: %s", cert.Private.String())
+	t.Logf("cert: %s", string(cert.Cert))
+	t.Logf("private: %s", string(cert.Private))
 }
