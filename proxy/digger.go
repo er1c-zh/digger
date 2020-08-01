@@ -1,11 +1,7 @@
 package proxy
 
 import (
-	"crypto/tls"
-	"github.com/er1c-zh/digger/util"
 	"github.com/er1c-zh/go-now/log"
-	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -70,73 +66,7 @@ func (d *Digger) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		d.MinusCurConn()
 	}()
 	if req.Method == "CONNECT" {
-		// https
-		// try hijack connection to client
-		wHiJack, ok := w.(http.Hijacker)
-		if !ok {
-			log.Warn("connection can't be hijacked")
-			return
-		}
-		connToClient, _, err := wHiJack.Hijack()
-		if err != nil {
-			log.Error("hijack fail: %s", err.Error())
-			return
-		}
-		defer func() {
-			_ = connToClient.Close()
-		}()
-		_, err = connToClient.Write([]byte("HTTP/1.1 200 Connection established!\r\n\r\n"))
-		if err != nil {
-			log.Error("write response to client fail: %s", err.Error())
-			return
-		}
-
-		cert, err := util.SignHost([]string{stripPort(req.Host)})
-		if err != nil {
-			log.Error("gen cert fail: %s", err.Error())
-			return
-		}
-
-		tlsToClient := tls.Server(connToClient, &tls.Config{
-			Certificates: []tls.Certificate{*cert},
-			InsecureSkipVerify: true,
-		})
-		defer tlsToClient.Close()
-		if err := tlsToClient.Handshake(); err != nil {
-			log.Error("shake hand with client fail: %s", err.Error())
-			return
-		}
-
-		addr := req.URL.Host
-		if req.URL.Port() == "" {
-			addr += ":443"
-		}
-		connToServer, err := net.Dial("tcp", addr)
-		if err != nil {
-			log.Error("dial %s fail: %s", err.Error())
-			return
-		}
-		defer connToServer.Close()
-		tlsToServer := tls.Client(connToServer, &tls.Config{
-			InsecureSkipVerify:          true,
-		})
-		defer tlsToServer.Close()
-		if err := tlsToServer.Handshake(); err != nil {
-			log.Error("shake hand with server fail: %s", err.Error())
-			return
-		}
-		var wg sync.WaitGroup
-		var errClient, errServer error
-		wg.Add(2)
-		go func() {
-			_, errClient = io.Copy(tlsToServer, tlsToClient)
-			wg.Done()
-		}()
-		go func() {
-			_, errServer = io.Copy(tlsToClient, tlsToServer)
-			wg.Done()
-		}()
-		wg.Wait()
+		d.BuildHttpsHandler()(w, req)
 		return
 	} else {
 		if !req.URL.IsAbs() {
@@ -144,6 +74,7 @@ func (d *Digger) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		} else {
 			d.BuildHttpHandler()(w, req)
+			return
 		}
 	}
 }
