@@ -4,6 +4,7 @@ A simple proxy for web development.
 
 ## road-map
 - [√] simple http proxy
+- [√] https mitm proxy
 - [] keep-alive http proxy
 - [√] log http request and response
 - [] log https request and response
