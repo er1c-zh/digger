@@ -6,18 +6,16 @@ import (
 	"github.com/er1c-zh/digger/util"
 	"github.com/er1c-zh/go-now/log"
 	"io"
-	"net"
 	"net/http"
-	"time"
 )
 
 func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
 		// https
-		// try hijack connection to client
+		// try hijack c8n to client
 		wHiJack, ok := w.(http.Hijacker)
 		if !ok {
-			log.Warn("connection can't be hijacked")
+			log.Warn("c8n can't be hijacked")
 			return
 		}
 		connToClient, _, err := wHiJack.Hijack()
@@ -50,52 +48,27 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 		}
 		defer tlsToClient.Close()
 		tlsToClientReader := bufio.NewReader(tlsToClient)
+
+		req.URL.Scheme = "https" // force use https
+		conn2Server, err := DefaultConnPool.GetOrCreate(ConnAction{URL: req.URL})
+		if err != nil {
+			log.Error("GetOrCreate fail: %s", err.Error())
+			return
+		}
+		defer DefaultConnPool.Put(conn2Server)
+		serReader := bufio.NewReader(conn2Server)
 		for _, err := tlsToClientReader.Peek(1); err != io.EOF; {
 			req, err = http.ReadRequest(tlsToClientReader)
 			if err != nil {
 				log.Error("ReadRequest fail: %s", err.Error())
 				return
 			}
-
-			addr := req.URL.Host
-			if req.URL.Port() == "" {
-				addr += ":443"
-			}
-			connToServer, err := net.Dial("tcp", addr)
+			err = req.Write(conn2Server)
 			if err != nil {
-				log.Error("dial %s fail: %s", err.Error())
+				log.Error("req.Write fail: %s", err.Error())
 				return
 			}
-			defer connToServer.Close()
-			tlsToServer := tls.Client(connToServer, &tls.Config{
-				InsecureSkipVerify: true,
-			})
-			defer tlsToServer.Close()
-			if err := tlsToServer.Handshake(); err != nil {
-				log.Error("shake hand with server fail: %s", err.Error())
-				return
-			}
-			reqRecord, err := recordReqFromHttpReq(req)
-			if err != nil {
-				log.Error("recordReqFromHttpReq fail: %s", err.Error())
-				return
-			}
-			record := _record{
-				Req:            reqRecord,
-				Resp:           nil,
-				TimeStart:      time.Now(),
-				TimeReqFinish:  time.Time{},
-				TimeRespFinish: time.Time{},
-			}
-			defer func() {
-				d.history.Add(record)
-			}()
-			err = req.Write(tlsToServer)
-			if err != nil {
-				log.Error("write fail: %s", err.Error())
-				return
-			}
-			resp, err := http.ReadResponse(bufio.NewReader(tlsToServer), req)
+			resp, err := http.ReadResponse(serReader, req)
 			if err != nil {
 				log.Error("ReadResponse fail: %s", err.Error())
 				return

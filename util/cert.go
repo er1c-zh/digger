@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -16,6 +17,8 @@ import (
 	"math/big"
 	math_rand "math/rand"
 	"net"
+	"runtime"
+	"sort"
 	"time"
 )
 
@@ -92,15 +95,19 @@ func SignHost(hosts []string) (*tls.Certificate, error) {
 			template.Subject.CommonName = h
 		}
 	}
-
+	hash := hashSorted(append(hosts, ":"+runtime.Version()))
+	var csprng CounterEncryptorRand
+	if csprng, err = NewCounterEncryptorRandFromKey(CA.PrivateKey, hash); err != nil {
+		return nil, err
+	}
 	var certpriv crypto.Signer
 	switch CA.PrivateKey.(type) {
 	case *rsa.PrivateKey:
-		if certpriv, err = rsa.GenerateKey(rand.Reader, 2048); err != nil {
+		if certpriv, err = rsa.GenerateKey(&csprng, 2048); err != nil {
 			return nil, err
 		}
 	case *ecdsa.PrivateKey:
-		if certpriv, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader); err != nil {
+		if certpriv, err = ecdsa.GenerateKey(elliptic.P256(), &csprng); err != nil {
 			return nil, err
 		}
 	default:
@@ -108,7 +115,7 @@ func SignHost(hosts []string) (*tls.Certificate, error) {
 	}
 
 	var derBytes []byte
-	if derBytes, err = x509.CreateCertificate(rand.Reader, template, CA.Leaf, certpriv.Public(), CA.PrivateKey); err != nil {
+	if derBytes, err = x509.CreateCertificate(&csprng, template, CA.Leaf, certpriv.Public(), CA.PrivateKey); err != nil {
 		return nil, err
 	}
 	return &tls.Certificate{
@@ -130,6 +137,29 @@ func init() {
 		log.Fatal("parse root CA fail: %s", err.Error())
 		panic(err)
 	}
+}
+
+func hashSorted(lst []string) []byte {
+	c := make([]string, len(lst))
+	copy(c, lst)
+	sort.Strings(c)
+	h := sha1.New()
+	for _, s := range c {
+		h.Write([]byte(s + ","))
+	}
+	return h.Sum(nil)
+}
+
+var (
+	RandGen randGenerator
+)
+type randGenerator struct {}
+
+func (r randGenerator) Read(p []byte) (n int, err error) {
+	for i := 0; i < len(p); i++ {
+		p[i] = '0'
+	}
+	return len(p), nil
 }
 
 var (
