@@ -21,6 +21,7 @@ func init() {
 
 type ConnAction struct {
 	URL *url.URL
+	ForceNew bool
 }
 
 func (a ConnAction) GetKey() string {
@@ -35,7 +36,7 @@ type ConnPool interface {
 type connPool struct {
 	idle    sync.Map
 	running sync.Map
-	mtx sync.Mutex
+	mtx     sync.Mutex
 }
 
 func NewConnPool() ConnPool {
@@ -43,6 +44,9 @@ func NewConnPool() ConnPool {
 }
 
 func (c *connPool) GetOrCreate(action ConnAction) (net.Conn, error) {
+	if action.ForceNew {
+		return c.getNew(action)
+	}
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 	connListUntyped, ok := c.idle.Load(action.GetKey())
@@ -71,16 +75,7 @@ func (c *connPool) GetOrCreate(action ConnAction) (net.Conn, error) {
 		if c == nil {
 			continue
 		}
-		// check is conn is alive
-		/*
-		if _, err := c.Peek(1); err != nil && err != io.EOF {
-			err = c.Close()
-			if err != nil {
-				log.Warn("try close conn fail: %s", err.Error())
-			}
-			continue
-		}
-		 */
+		// todo: check is conn is alive
 		conn = c
 		i++
 		break
@@ -102,6 +97,13 @@ func (c *connPool) GetOrCreate(action ConnAction) (net.Conn, error) {
 func (c *connPool) Put(conn net.Conn) {
 	_conn, ok := conn.(connectionStore)
 	if !ok {
+		return
+	}
+	if _conn.GetConnAction().ForceNew {
+		err := conn.Close()
+		if err != nil {
+			log.Warn("conn.Close() fail: %s", err.Error())
+		}
 		return
 	}
 	k := _conn.GetKey()
@@ -158,24 +160,27 @@ func (c *connPool) getNew(action ConnAction) (*c8n, error) {
 		conn = tlsConn
 	}
 	_conn := &c8n{
-		conn: conn,
-		r:    bufio.NewReader(conn),
-		key: action.GetKey() + ":" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		conn:    conn,
+		r:       bufio.NewReader(conn),
+		key:     action.GetKey() + ":" + strconv.FormatInt(time.Now().UnixNano(), 10),
 		idleKey: action.GetKey(),
+		action:  action,
 	}
 	return _conn, nil
 }
 
 type connectionStore interface {
+	GetConnAction() ConnAction
 	GetKey() string
 	GetIdleKey() string
 }
 
 type c8n struct {
-	conn net.Conn
-	r *bufio.Reader
-	key string
+	conn    net.Conn
+	r       *bufio.Reader
+	key     string
 	idleKey string
+	action  ConnAction
 }
 
 func (c *c8n) Write(b []byte) (n int, err error) {
@@ -222,3 +227,6 @@ func (c *c8n) GetIdleKey() string {
 	return c.idleKey
 }
 
+func (c *c8n) GetConnAction() ConnAction {
+	return c.action
+}

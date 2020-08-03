@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"github.com/er1c-zh/go-now/log"
 	"math/big"
-	math_rand "math/rand"
+	m_rand "math/rand"
 	"net"
 	"runtime"
 	"sort"
@@ -77,7 +77,7 @@ func GenerateCertificate() (*Cert, error) {
 func SignHost(hosts []string) (*tls.Certificate, error) {
 	var err error
 	template := &x509.Certificate{
-		SerialNumber: big.NewInt(math_rand.Int63()),
+		SerialNumber: big.NewInt(m_rand.Int63()),
 		Subject: pkix.Name{
 			Organization: []string{"Digger untrusted proxy"},
 		},
@@ -137,6 +137,7 @@ func init() {
 		log.Fatal("parse root CA fail: %s", err.Error())
 		panic(err)
 	}
+	m_rand.Seed(time.Now().UnixNano())
 }
 
 func hashSorted(lst []string) []byte {
@@ -148,18 +149,6 @@ func hashSorted(lst []string) []byte {
 		h.Write([]byte(s + ","))
 	}
 	return h.Sum(nil)
-}
-
-var (
-	RandGen randGenerator
-)
-type randGenerator struct {}
-
-func (r randGenerator) Read(p []byte) (n int, err error) {
-	for i := 0; i < len(p); i++ {
-		p[i] = '0'
-	}
-	return len(p), nil
 }
 
 var (

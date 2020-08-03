@@ -50,7 +50,10 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 		tlsToClientReader := bufio.NewReader(tlsToClient)
 
 		req.URL.Scheme = "https" // force use https
-		conn2Server, err := DefaultConnPool.GetOrCreate(ConnAction{URL: req.URL})
+		conn2Server, err := DefaultConnPool.GetOrCreate(ConnAction{
+			URL: req.URL,
+			ForceNew: true,
+		})
 		if err != nil {
 			log.Error("GetOrCreate fail: %s", err.Error())
 			return
