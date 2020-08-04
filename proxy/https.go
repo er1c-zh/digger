@@ -52,7 +52,7 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 
 		req.URL.Scheme = "https" // force use https
 		conn2Server, err := DefaultConnPool.GetOrCreate(ConnAction{
-			URL: req.URL,
+			URL:      req.URL,
 			ForceNew: true,
 		})
 		if err != nil {
@@ -63,7 +63,7 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 		serReader := bufio.NewReader(conn2Server)
 		var innerErr error
 		for innerErr == nil {
-			func (){
+			func() {
 				req, err := http.ReadRequest(tlsToClientReader)
 				if err != nil {
 					log.Error("ReadRequest fail: %s", err.Error())
@@ -82,7 +82,7 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 					TimeStart:      time.Now(),
 					TimeReqFinish:  time.Time{},
 					TimeRespFinish: time.Time{},
-					IsHttps: true,
+					IsHttps:        true,
 				}
 				defer func() {
 					d.history.Add(record)
