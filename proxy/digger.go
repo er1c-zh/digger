@@ -48,6 +48,7 @@ func (d *Digger) Run() {
 		d.LogStatisticsInfoPerSecond()
 		d.noProxyHandler.Register("/statistics", d.s.BuildHandler())
 		d.noProxyHandler.Register("/history", d.history.BuildHandler())
+		d.noProxyHandler.Register("/history/clean", d.history.BuildCleanHandler())
 
 		log.Info("Digger running!")
 

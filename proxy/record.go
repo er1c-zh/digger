@@ -136,6 +136,14 @@ func (l *_recordList) BuildHandler() func(writer http.ResponseWriter, _ *http.Re
 	}
 }
 
+func (l *_recordList) BuildCleanHandler() func(writer http.ResponseWriter, _ *http.Request) {
+	return func(writer http.ResponseWriter, _ *http.Request) {
+		l.data = l.data[0:0]
+		writer.WriteHeader(http.StatusOK)
+		return
+	}
+}
+
 func (l *_recordList) Add(r _record) {
 	l.mtx.Lock()
 	defer l.mtx.Unlock()
