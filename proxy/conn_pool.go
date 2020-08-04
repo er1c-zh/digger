@@ -20,7 +20,7 @@ func init() {
 }
 
 type ConnAction struct {
-	URL *url.URL
+	URL      *url.URL
 	ForceNew bool
 }
 
@@ -188,7 +188,7 @@ func (c *c8n) Write(b []byte) (n int, err error) {
 }
 
 func (c *c8n) Close() error {
-	return c.Close()
+	return c.conn.Close()
 }
 
 func (c *c8n) LocalAddr() net.Addr {

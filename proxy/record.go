@@ -105,6 +105,8 @@ type _record struct {
 	TimeStart      time.Time
 	TimeReqFinish  time.Time
 	TimeRespFinish time.Time
+
+	IsHttps bool
 }
 
 type _recordList struct {

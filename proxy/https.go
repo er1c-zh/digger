@@ -7,6 +7,7 @@ import (
 	"github.com/er1c-zh/go-now/log"
 	"io"
 	"net/http"
+	"time"
 )
 
 func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Request) {
@@ -51,7 +52,7 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 
 		req.URL.Scheme = "https" // force use https
 		conn2Server, err := DefaultConnPool.GetOrCreate(ConnAction{
-			URL: req.URL,
+			URL:      req.URL,
 			ForceNew: true,
 		})
 		if err != nil {
@@ -60,42 +61,65 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 		}
 		defer DefaultConnPool.Put(conn2Server)
 		serReader := bufio.NewReader(conn2Server)
-		for _, err := tlsToClientReader.Peek(1); err != io.EOF; {
-			req, err = http.ReadRequest(tlsToClientReader)
-			if err != nil {
-				log.Error("ReadRequest fail: %s", err.Error())
-				return
-			}
-			err = req.Write(conn2Server)
-			if err != nil {
-				log.Error("req.Write fail: %s", err.Error())
-				return
-			}
-			resp, err := http.ReadResponse(serReader, req)
-			if err != nil {
-				log.Error("ReadResponse fail: %s", err.Error())
-				return
-			}
-
-			err = resp.Write(tlsToClient)
-			if err != nil {
-				log.Error("write to tlsToClient fail: %s", err.Error())
-				return
-			}
-			/*
-				for k, v := range resp.Header {
-					for _, _v := range v {
-						w.Header().Add(k, _v)
-					}
-				}
-				w.WriteHeader(resp.StatusCode)
-				n, err := io.Copy(w, resp.Body)
+		var innerErr error
+		for innerErr == nil {
+			func() {
+				req, err := http.ReadRequest(tlsToClientReader)
 				if err != nil {
-					log.Error("io.Copy fail: %s", err.Error())
+					log.Error("ReadRequest fail: %s", err.Error())
+					innerErr = err
 					return
 				}
-				log.Info("io.Copy cnt: %d", n)
-			*/
+				reqRecord, err := recordReqFromHttpReq(req)
+				if err != nil {
+					log.Error("recordReqFromHttpReq fail: %s", err.Error())
+					innerErr = err
+					return
+				}
+				record := _record{
+					Req:            reqRecord,
+					Resp:           nil,
+					TimeStart:      time.Now(),
+					TimeReqFinish:  time.Time{},
+					TimeRespFinish: time.Time{},
+					IsHttps:        true,
+				}
+				defer func() {
+					d.history.Add(record)
+				}()
+				err = req.Write(conn2Server)
+				if err != nil {
+					log.Error("req.Write fail: %s", err.Error())
+					innerErr = err
+					return
+				}
+				resp, err := http.ReadResponse(serReader, req)
+				if err != nil {
+					log.Error("ReadResponse fail: %s", err.Error())
+					innerErr = err
+					return
+				}
+				record.Resp, err = recordRespFromHttpResp(resp)
+				//defer func() {
+				//	_ = resp.Body.Close()
+				//}()
+				if err != nil {
+					if err == io.EOF {
+						_ = tlsToClient.Close()
+						return
+					}
+					log.Error("ReadResponse fail: %s", err.Error())
+					innerErr = err
+					return
+				}
+
+				err = resp.Write(tlsToClient)
+				if err != nil {
+					log.Error("write to tlsToClient fail: %s", err.Error())
+					innerErr = err
+					return
+				}
+			}()
 		}
 		return
 	}
