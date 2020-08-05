@@ -22,7 +22,8 @@ type _recordReq struct {
 	RemoteAddr    string
 	RequestURI    string
 	BodyOrigin    []byte `json:"body_origin;omitempty"`
-	// todo parse body
+	Form          url.Values
+	// todo multipart form
 }
 
 type teeReadCloser struct {
@@ -75,7 +76,9 @@ type _recordResp struct {
 	ProtoMinor    int
 	Header        http.Header
 	ContentLength int64
-	BodyOrigin    []byte
+	Cookies       []*http.Cookie
+	BodyOrigin    []byte `json:"-"`
+	Body          string
 }
 
 func recordRespFromHttpResp(src *http.Response) (*_recordResp, error) {
@@ -87,6 +90,7 @@ func recordRespFromHttpResp(src *http.Response) (*_recordResp, error) {
 		ProtoMinor:    src.ProtoMinor,
 		Header:        src.Header,
 		ContentLength: src.ContentLength,
+		Cookies:       src.Cookies(),
 		BodyOrigin:    nil,
 	}
 	src.Body = TeeReadCloser(src.Body, r)
@@ -132,6 +136,14 @@ func (l *_recordList) BuildHandler() func(writer http.ResponseWriter, _ *http.Re
 			log.Error("statistics write to writer fail: %s", err.Error())
 			return
 		}
+		return
+	}
+}
+
+func (l *_recordList) BuildCleanHandler() func(writer http.ResponseWriter, _ *http.Request) {
+	return func(writer http.ResponseWriter, _ *http.Request) {
+		l.data = l.data[0:0]
+		writer.WriteHeader(http.StatusOK)
 		return
 	}
 }

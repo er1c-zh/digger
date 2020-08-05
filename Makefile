@@ -5,11 +5,15 @@ all:
 fmt:
 	gofmt -l -w ./**/*.go
 
-build:
-	make fmt
-	test -d output || mkdir output
-	go build -o output/digger
+build: output fmt
+	env GO111MODULE=on go build -o output/digger
 
 clean:
-	test -d output && rm -r ./output
+	[ ! -d ./output ] || rm -r ./output
+
+output:
+	mkdir output
+
+run: build
+	./output/digger
 

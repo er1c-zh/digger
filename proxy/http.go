@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"github.com/er1c-zh/go-now/log"
 	"io"
 	"net"
@@ -24,8 +25,24 @@ func (d *Digger) BuildHttpHandler() func(w http.ResponseWriter, req *http.Reques
 			TimeRespFinish: time.Time{},
 		}
 		defer func() {
+			// req never nil
+			_req, err := http.NewRequest(record.Req.Method, record.Req.URL.String(), bytes.NewReader(record.Req.BodyOrigin))
+			if err != nil {
+				log.Error("NewRequest fail: %s", err.Error())
+			}
+			err = _req.ParseForm()
+			if err != nil {
+				log.Error("ParseForm fail: %s", err.Error())
+			}
+			if record.Resp != nil {
+				record.Resp.Body = string(record.Resp.BodyOrigin)
+			}
+			record.Req.Form = _req.Form
 			d.history.Add(record)
 		}()
+
+		// remove accept-encoding
+		req.Header.Del("Accept-Encoding")
 		log.Info("[is abs: %t][host(%s)][port(%s)]connect to (%s)", req.URL.IsAbs(), req.URL.Host, req.URL.Port(), req.URL.Host)
 		addr := req.URL.Host
 		if req.URL.Port() == "" {
