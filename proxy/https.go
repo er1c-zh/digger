@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"github.com/er1c-zh/digger/util"
 	"github.com/er1c-zh/go-now/log"
@@ -33,6 +34,7 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 			return
 		}
 
+		// todo cache certificate
 		cert, err := util.SignHost([]string{stripPort(req.Host)})
 		if err != nil {
 			log.Error("gen cert fail: %s", err.Error())
@@ -50,7 +52,7 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 		defer tlsToClient.Close()
 		tlsToClientReader := bufio.NewReader(tlsToClient)
 
-		req.URL.Scheme = "https" // force use https
+		req.URL.Scheme = "https" // todo more graceful implement force use https
 		conn2Server, err := DefaultConnPool.GetOrCreate(ConnAction{
 			URL:      req.URL,
 			ForceNew: true,
@@ -85,8 +87,23 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 					IsHttps:        true,
 				}
 				defer func() {
+					// req never nil
+					_req, err := http.NewRequest(record.Req.Method, record.Req.URL.String(), bytes.NewReader(record.Req.BodyOrigin))
+					if err != nil {
+						log.Error("NewRequest fail: %s", err.Error())
+					}
+					err = _req.ParseForm()
+					if err != nil {
+						log.Error("ParseForm fail: %s", err.Error())
+					}
+					if record.Resp != nil {
+						record.Resp.Body = string(record.Resp.BodyOrigin)
+					}
+					record.Req.Form = _req.Form
 					d.history.Add(record)
 				}()
+				// remove accept-encoding
+				req.Header.Del("Accept-Encoding")
 				err = req.Write(conn2Server)
 				if err != nil {
 					log.Error("req.Write fail: %s", err.Error())
@@ -100,6 +117,7 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 					return
 				}
 				record.Resp, err = recordRespFromHttpResp(resp)
+				// todo is this wrong?
 				//defer func() {
 				//	_ = resp.Body.Close()
 				//}()
