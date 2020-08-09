@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Request) {
-	return func(w http.ResponseWriter, req *http.Request) {
+func (d *Digger) BuildHttpsHandler() func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, __req *http.Request) {
 		// https
 		// try hijack c8n to client
 		wHiJack, ok := w.(http.Hijacker)
@@ -35,7 +35,7 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 		}
 
 		// todo cache certificate
-		cert, err := util.SignHost([]string{stripPort(req.Host)})
+		cert, err := util.SignHost([]string{stripPort(__req.Host)})
 		if err != nil {
 			log.Error("gen cert fail: %s", err.Error())
 			return
@@ -49,13 +49,14 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 			log.Error("shake hand with client fail: %s", err.Error())
 			return
 		}
-		defer tlsToClient.Close()
+		defer func() {
+			_ = tlsToClient.Close()
+		}()
 		tlsToClientReader := bufio.NewReader(tlsToClient)
 
-		req.URL.Scheme = "https" // todo more graceful implement force use https
 		conn2Server, err := DefaultConnPool.GetOrCreate(ConnAction{
-			URL:      req.URL,
-			ForceNew: true,
+			URL: util.CopyAndFillURL(__req.URL, true),
+			//ForceNew: true,
 		})
 		if err != nil {
 			log.Error("GetOrCreate fail: %s", err.Error())
@@ -66,15 +67,17 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 		var innerErr error
 		for innerErr == nil {
 			func() {
-				req, err := http.ReadRequest(tlsToClientReader)
+				_req, err := http.ReadRequest(tlsToClientReader)
 				if err != nil {
-					log.Error("ReadRequest fail: %s", err.Error())
+					if err != io.EOF {
+						log.Error("ReadRequest fail: %s", err.Error())
+					}
 					innerErr = err
 					return
 				}
-				reqRecord, err := recordReqFromHttpReq(req)
+				req, reqRecord, err := wrapRequest(_req)
 				if err != nil {
-					log.Error("recordReqFromHttpReq fail: %s", err.Error())
+					log.Error("wrapRequest fail: %s", err.Error())
 					innerErr = err
 					return
 				}
@@ -102,8 +105,6 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 					record.Req.Form = _req.Form
 					d.history.Add(record)
 				}()
-				// remove accept-encoding
-				req.Header.Del("Accept-Encoding")
 				err = req.Write(conn2Server)
 				if err != nil {
 					log.Error("req.Write fail: %s", err.Error())
@@ -117,15 +118,10 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 					return
 				}
 				record.Resp, err = recordRespFromHttpResp(resp)
-				// todo is this wrong?
-				//defer func() {
-				//	_ = resp.Body.Close()
-				//}()
+				defer func() {
+					_ = resp.Body.Close()
+				}()
 				if err != nil {
-					if err == io.EOF {
-						_ = tlsToClient.Close()
-						return
-					}
 					log.Error("ReadResponse fail: %s", err.Error())
 					innerErr = err
 					return

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"github.com/er1c-zh/digger/util"
 	"github.com/er1c-zh/go-now/log"
 	"io"
 	"net/http"
@@ -46,7 +47,7 @@ func (t *teeReadCloser) Close() error {
 	return t.originReader.Close()
 }
 
-func recordReqFromHttpReq(src *http.Request) (*_recordReq, error) {
+func wrapRequest(src *http.Request) (*http.Request, *_recordReq, error) {
 	r := &_recordReq{
 		Method:        src.Method,
 		URL:           src.URL,
@@ -60,7 +61,8 @@ func recordReqFromHttpReq(src *http.Request) (*_recordReq, error) {
 		RequestURI:    src.RequestURI,
 	}
 	src.Body = TeeReadCloser(src.Body, r)
-	return r, nil
+	src = util.WrapProxyRequest(src)
+	return src, r, nil
 }
 
 func (r *_recordReq) Write(p []byte) (n int, err error) {

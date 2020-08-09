@@ -10,11 +10,11 @@ import (
 	"time"
 )
 
-func (d *Digger) BuildHttpHandler() func(w http.ResponseWriter, req *http.Request) {
-	return func(w http.ResponseWriter, req *http.Request) {
-		reqRecord, err := recordReqFromHttpReq(req)
+func (d *Digger) BuildHttpHandler() func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, __r *http.Request) {
+		req, reqRecord, err := wrapRequest(__r)
 		if err != nil {
-			log.Error("recordReqFromHttpReq fail: %s", err.Error())
+			log.Error("wrapRequest fail: %s", err.Error())
 			return
 		}
 		record := _record{
@@ -41,13 +41,11 @@ func (d *Digger) BuildHttpHandler() func(w http.ResponseWriter, req *http.Reques
 			d.history.Add(record)
 		}()
 
-		// remove accept-encoding
-		req.Header.Del("Accept-Encoding")
-		log.Info("[is abs: %t][host(%s)][port(%s)]connect to (%s)", req.URL.IsAbs(), req.URL.Host, req.URL.Port(), req.URL.Host)
 		addr := req.URL.Host
 		if req.URL.Port() == "" {
 			addr += ":80"
 		}
+		// todo use net pool
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			log.Error("dial (%s) fail: %s", addr, err.Error())
