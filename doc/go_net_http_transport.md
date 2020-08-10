@@ -171,7 +171,7 @@ func (pc *persistConn) roundTrip(req *transportRequest) (resp *Response, err err
 		headerFn(req.extraHeaders())
 	}
 
-	// 如果原生的请求没有要求Accept-Encoding，那么这里会尝试使用gzip并解压
+	// 如果原生的请求没有要求Accept-Encoding且符合一些细小的case，那么这里会尝试使用gzip并解压
 	requestedGzip := false
 	if !pc.t.DisableCompression &&
 		req.Header.Get("Accept-Encoding") == "" &&
@@ -218,11 +218,14 @@ func (pc *persistConn) roundTrip(req *transportRequest) (resp *Response, err err
 	// Write the request concurrently with waiting for a response,
 	// in case the server decides to reply before reading our full
 	// request body.
+	// 读写并行，为了解决服务器不读取全部请求便返回数据的情况
 	startBytesWritten := pc.nwrite
 	writeErrCh := make(chan error, 1)
+	// 将请求写到 persistConn.writech 中，等待writeLoop消费
 	pc.writech <- writeRequest{req, writeErrCh, continueCh}
 
 	resc := make(chan responseAndError)
+	// 将读取请求的“任务”写到persistConn.reqch中，等待readLoop消费
 	pc.reqch <- requestAndChan{
 		req:        req.Request,
 		ch:         resc,
@@ -234,17 +237,19 @@ func (pc *persistConn) roundTrip(req *transportRequest) (resp *Response, err err
 	var respHeaderTimer <-chan time.Time
 	cancelChan := req.Request.Cancel
 	ctxDoneChan := req.Context().Done()
+	// 循环处理 写异常、链接关闭、读、取消、Done 事件
 	for {
 		testHookWaitResLoop()
 		select {
-		case err := <-writeErrCh:
+		case err := <-writeErrCh: // 写请求的时候发生异常，或者写入完成？
 			if debugRoundTrip {
 				req.logf("writeErrCh resv: %T/%#v", err, err)
 			}
 			if err != nil {
-				pc.close(fmt.Errorf("write error: %v", err))
-				return nil, pc.mapRoundTripError(req, startBytesWritten, err)
+				pc.close(fmt.Errorf("write error: %v", err)) // 写异常了，关闭链接
+				return nil, pc.mapRoundTripError(req, startBytesWritten, err) // 返回结果
 			}
+			// 没有异常，且有“写入请求完成，等待返回结果超时时间”，开始计时
 			if d := pc.t.ResponseHeaderTimeout; d > 0 {
 				if debugRoundTrip {
 					req.logf("starting timer for %v", d)
@@ -253,18 +258,18 @@ func (pc *persistConn) roundTrip(req *transportRequest) (resp *Response, err err
 				defer timer.Stop() // prevent leaks
 				respHeaderTimer = timer.C
 			}
-		case <-pc.closech:
+		case <-pc.closech: // 链接关闭了
 			if debugRoundTrip {
 				req.logf("closech recv: %T %#v", pc.closed, pc.closed)
 			}
 			return nil, pc.mapRoundTripError(req, startBytesWritten, pc.closed)
-		case <-respHeaderTimer:
+		case <-respHeaderTimer: // 返回结果超时了
 			if debugRoundTrip {
 				req.logf("timeout waiting for response headers.")
 			}
 			pc.close(errTimeout)
 			return nil, errTimeout
-		case re := <-resc:
+		case re := <-resc: // 读取到了结果，或发生了异常
 			if (re.res == nil) == (re.err == nil) {
 				panic(fmt.Sprintf("internal error: exactly one of res or err should be set; nil=%v", re.res == nil))
 			}
@@ -272,17 +277,251 @@ func (pc *persistConn) roundTrip(req *transportRequest) (resp *Response, err err
 				req.logf("resc recv: %p, %T/%#v", re.res, re.err, re.err)
 			}
 			if re.err != nil {
+				// 读取结果发生异常
 				return nil, pc.mapRoundTripError(req, startBytesWritten, re.err)
 			}
-			return re.res, nil
+			return re.res, nil // 正常读取到了结果，返回
 		case <-cancelChan:
-			pc.t.CancelRequest(req.Request)
+			pc.t.CancelRequest(req.Request) // 请求被主动取消了
 			cancelChan = nil
-		case <-ctxDoneChan:
+		case <-ctxDoneChan: // 请求的context被完成了
 			pc.t.cancelRequest(req.Request, req.Context().Err())
 			cancelChan = nil
 			ctxDoneChan = nil
 		}
+	}
+}
+```
+
+持久连接对象的writeLoop方法，会消费pc.writech中的数据，向目标链接发送数据
+
+```golang
+func (pc *persistConn) writeLoop() {
+	defer close(pc.writeLoopDone)
+	for { // 循环处理请求
+		select {
+		case wr := <-pc.writech:
+			startBytesWritten := pc.nwrite
+			err := wr.req.Request.write(pc.bw, pc.isProxy, wr.req.extra, pc.waitForContinue(wr.continueCh)) // 调用 http.Request.write方法，向pc.bw(bufWriter)写入请求
+			if bre, ok := err.(requestBodyReadError); ok {
+				// 读取请求的body错误
+				err = bre.error
+				// Errors reading from the user's
+				// Request.Body are high priority.
+				// Set it here before sending on the
+				// channels below or calling
+				// pc.close() which tears town
+				// connections and causes other
+				// errors.
+				wr.req.setError(err)
+			}
+			if err == nil {
+				// 如果没有发生异常，刷新发送缓冲区
+				err = pc.bw.Flush()
+			}
+			if err != nil {
+				wr.req.Request.closeBody()
+				if pc.nwrite == startBytesWritten {
+					// pc.nwrite 在被包装的pc.bw中被修改
+					// 如果没有变动，意味着没有数据被写入连接就发生异常
+					err = nothingWrittenError{err}
+				}
+			}
+			pc.writeErrCh <- err // to the body reader, which might recycle us
+			wr.ch <- err         // to the roundTrip function
+			if err != nil {
+				pc.close(err)
+				return
+			}
+			// 如果正常写入，循环等待下次任务
+		case <-pc.closech: // 持久连接被关闭
+			return
+		}
+	}
+}
+```
+
+持久连接对象的readLoop方法，读取链接中的数据
+
+```golang
+func (pc *persistConn) readLoop() {
+	closeErr := errReadLoopExiting // default value, if not changed below
+	defer func() {
+		pc.close(closeErr)
+		pc.t.removeIdleConn(pc)
+	}()
+
+	tryPutIdleConn := func(trace *httptrace.ClientTrace) bool {
+		if err := pc.t.tryPutIdleConn(pc); err != nil {
+			closeErr = err
+			if trace != nil && trace.PutIdleConn != nil && err != errKeepAlivesDisabled {
+				trace.PutIdleConn(err)
+			}
+			return false
+		}
+		if trace != nil && trace.PutIdleConn != nil {
+			trace.PutIdleConn(nil)
+		}
+		return true
+	}
+
+	// eofc is used to block caller goroutines reading from Response.Body
+	// at EOF until this goroutines has (potentially) added the connection
+	// back to the idle pool.
+	eofc := make(chan struct{})
+	defer close(eofc) // unblock reader on errors
+
+	// Read this once, before loop starts. (to avoid races in tests)
+	testHookMu.Lock()
+	testHookReadLoopBeforeNextRead := testHookReadLoopBeforeNextRead
+	testHookMu.Unlock()
+
+	alive := true
+	for alive {
+		pc.readLimit = pc.maxHeaderResponseSize()
+		_, err := pc.br.Peek(1)
+
+		pc.mu.Lock()
+		if pc.numExpectedResponses == 0 {
+			pc.readLoopPeekFailLocked(err)
+			pc.mu.Unlock()
+			return
+		}
+		pc.mu.Unlock()
+
+		rc := <-pc.reqch
+		trace := httptrace.ContextClientTrace(rc.req.Context())
+
+		var resp *Response
+		if err == nil {
+			resp, err = pc.readResponse(rc, trace)
+		} else {
+			err = transportReadFromServerError{err}
+			closeErr = err
+		}
+
+		if err != nil {
+			if pc.readLimit <= 0 {
+				err = fmt.Errorf("net/http: server response headers exceeded %d bytes; aborted", pc.maxHeaderResponseSize())
+			}
+
+			select {
+			case rc.ch <- responseAndError{err: err}:
+			case <-rc.callerGone:
+				return
+			}
+			return
+		}
+		pc.readLimit = maxInt64 // effectively no limit for response bodies
+
+		pc.mu.Lock()
+		pc.numExpectedResponses--
+		pc.mu.Unlock()
+
+		bodyWritable := resp.bodyIsWritable()
+		hasBody := rc.req.Method != "HEAD" && resp.ContentLength != 0
+
+		if resp.Close || rc.req.Close || resp.StatusCode <= 199 || bodyWritable {
+			// Don't do keep-alive on error if either party requested a close
+			// or we get an unexpected informational (1xx) response.
+			// StatusCode 100 is already handled above.
+			alive = false
+		}
+
+		if !hasBody || bodyWritable {
+			pc.t.setReqCanceler(rc.req, nil)
+
+			// Put the idle conn back into the pool before we send the response
+			// so if they process it quickly and make another request, they'll
+			// get this same conn. But we use the unbuffered channel 'rc'
+			// to guarantee that persistConn.roundTrip got out of its select
+			// potentially waiting for this persistConn to close.
+			// but after
+			alive = alive &&
+				!pc.sawEOF &&
+				pc.wroteRequest() &&
+				tryPutIdleConn(trace)
+
+			if bodyWritable {
+				closeErr = errCallerOwnsConn
+			}
+
+			select {
+			case rc.ch <- responseAndError{res: resp}:
+			case <-rc.callerGone:
+				return
+			}
+
+			// Now that they've read from the unbuffered channel, they're safely
+			// out of the select that also waits on this goroutine to die, so
+			// we're allowed to exit now if needed (if alive is false)
+			testHookReadLoopBeforeNextRead()
+			continue
+		}
+
+		waitForBodyRead := make(chan bool, 2)
+		body := &bodyEOFSignal{
+			body: resp.Body,
+			earlyCloseFn: func() error {
+				waitForBodyRead <- false
+				<-eofc // will be closed by deferred call at the end of the function
+				return nil
+
+			},
+			fn: func(err error) error {
+				isEOF := err == io.EOF
+				waitForBodyRead <- isEOF
+				if isEOF {
+					<-eofc // see comment above eofc declaration
+				} else if err != nil {
+					if cerr := pc.canceled(); cerr != nil {
+						return cerr
+					}
+				}
+				return err
+			},
+		}
+
+		resp.Body = body
+		if rc.addedGzip && strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+			resp.Body = &gzipReader{body: body}
+			resp.Header.Del("Content-Encoding")
+			resp.Header.Del("Content-Length")
+			resp.ContentLength = -1
+			resp.Uncompressed = true
+		}
+
+		select {
+		case rc.ch <- responseAndError{res: resp}:
+		case <-rc.callerGone:
+			return
+		}
+
+		// Before looping back to the top of this function and peeking on
+		// the bufio.Reader, wait for the caller goroutine to finish
+		// reading the response body. (or for cancellation or death)
+		select {
+		case bodyEOF := <-waitForBodyRead:
+			pc.t.setReqCanceler(rc.req, nil) // before pc might return to idle pool
+			alive = alive &&
+				bodyEOF &&
+				!pc.sawEOF &&
+				pc.wroteRequest() &&
+				tryPutIdleConn(trace)
+			if bodyEOF {
+				eofc <- struct{}{}
+			}
+		case <-rc.req.Cancel:
+			alive = false
+			pc.t.CancelRequest(rc.req)
+		case <-rc.req.Context().Done():
+			alive = false
+			pc.t.cancelRequest(rc.req, rc.req.Context().Err())
+		case <-pc.closech:
+			alive = false
+		}
+
+		testHookReadLoopBeforeNextRead()
 	}
 }
 ```
