@@ -68,6 +68,7 @@ func (d *Digger) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}()
 	if req.Method == "CONNECT" {
 		d.BuildHttpsHandler()(w, req)
+		log.Debug("return from https handler: %s", req.URL.String())
 		return
 	} else {
 		if !req.URL.IsAbs() {

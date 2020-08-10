@@ -45,6 +45,7 @@ func NewConnPool() ConnPool {
 
 func (c *connPool) GetOrCreate(action ConnAction) (net.Conn, error) {
 	if action.ForceNew {
+		log.Debug("GetOrCreate ForceNew == true")
 		return c.getNew(action)
 	}
 	c.mtx.Lock()
@@ -57,7 +58,10 @@ func (c *connPool) GetOrCreate(action ConnAction) (net.Conn, error) {
 			log.Error("getNew fail: %s", err.Error())
 			return nil, err
 		}
+		log.Debug("GetOrCreate getNew")
 		connListUntyped = []connectionStore{_conn}
+	} else {
+		log.Debug("GetOrCreate re-use")
 	}
 
 	connList, ok := connListUntyped.([]connectionStore)
