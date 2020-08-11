@@ -1,5 +1,7 @@
 # transport.go
 
+*源码版本 go 1.12*
+
 接口RoundTripper是用来
 
 1. 完成一次http事务(Transaction)
@@ -153,7 +155,20 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 
 persistConn是对于net.Conn的包装，实现了```io.Reader```接口。
 
-分析下主要的几个方法。
+persistConn维持一个连接，通过一读一写两个任务channel，和readLoop/writeLoop两个循环来具体的实现了roundTrip的功能。
+
+### 简单图示
+
+![persistConn流程示意图](http://www.plantuml.com/plantuml/proxy?src=https://raw.githubusercontent.com/er1c-zh/digger/master/doc/go_http_transport_persist_conn.puml)
+
+### 简单分析
+
+分析下主要的几个方法:
+
+- roundTrip
+- readLoop
+- writeLoop
+
 
 ```golang
 func (pc *persistConn) roundTrip(req *transportRequest) (resp *Response, err error) {
@@ -347,12 +362,13 @@ func (pc *persistConn) writeLoop() {
 func (pc *persistConn) readLoop() {
 	closeErr := errReadLoopExiting // default value, if not changed below
 	defer func() {
-		pc.close(closeErr)
-		pc.t.removeIdleConn(pc)
+		pc.close(closeErr) // 关闭底层链接（如果没有被接管）和pc.closech
+		pc.t.removeIdleConn(pc) // 从链接池移除链接
 	}()
 
+	// 用来放回链接，如果发生异常，返回false
 	tryPutIdleConn := func(trace *httptrace.ClientTrace) bool {
-		if err := pc.t.tryPutIdleConn(pc); err != nil {
+		if err := pc.t.tryPutIdleConn(pc)/*tranport的放回方法*/; err != nil {
 			closeErr = err
 			if trace != nil && trace.PutIdleConn != nil && err != errKeepAlivesDisabled {
 				trace.PutIdleConn(err)
@@ -441,7 +457,9 @@ func (pc *persistConn) readLoop() {
 			// to guarantee that persistConn.roundTrip got out of its select
 			// potentially waiting for this persistConn to close.
 			// but after
-			// 先放回链接，后返回结果
+			// 1. 先放回链接，后返回结果，可以保证下一次请求的时候能复用
+			// 2. 为了保证该持久链接对象的roundTrip方法从等待该持久链接对象
+			// 关闭的select等待中退出，将readLoop阻塞在无缓冲的rc.ch上
 			alive = alive &&
 				!pc.sawEOF && // 没有读取到EOF
 				pc.wroteRequest() && // 链接的写是否无错误的完成
@@ -460,12 +478,17 @@ func (pc *persistConn) readLoop() {
 			// Now that they've read from the unbuffered channel, they're safely
 			// out of the select that also waits on this goroutine to die, so
 			// we're allowed to exit now if needed (if alive is false)
+			// （接2）直到此时，就可以认为roundTrip方法从上述的等待中退出了
+			// 那么如果需要的话(alive == false)，我们可以安全的从readLoop中退出（意味着关闭该链接）
+			// （如果不这么做的话，可能会有结果已经返回，但是persistConn.roundTrip方法
+			// 没有消费到的情况，因为在等待结果的select上，也等待persistConn的close事件）
 			testHookReadLoopBeforeNextRead()
 			continue
 		}
 
 		waitForBodyRead := make(chan bool, 2)
-		body := &bodyEOFSignal{
+		// 一个对net.conn的io.ReadCloser包装，用于确保下一次读取之前，上一次请求的处理已经完成
+		body := &bodyEOFSignal{ 
 			body: resp.Body,
 			earlyCloseFn: func() error {
 				waitForBodyRead <- false
@@ -489,6 +512,7 @@ func (pc *persistConn) readLoop() {
 
 		resp.Body = body
 		if rc.addedGzip && strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+			// 处理transport添加的gzip
 			resp.Body = &gzipReader{body: body}
 			resp.Header.Del("Content-Encoding")
 			resp.Header.Del("Content-Length")
@@ -496,7 +520,7 @@ func (pc *persistConn) readLoop() {
 			resp.Uncompressed = true
 		}
 
-		select {
+		select { // 等待读取或者请求取消
 		case rc.ch <- responseAndError{res: resp}:
 		case <-rc.callerGone:
 			return
@@ -506,23 +530,23 @@ func (pc *persistConn) readLoop() {
 		// the bufio.Reader, wait for the caller goroutine to finish
 		// reading the response body. (or for cancellation or death)
 		select {
-		case bodyEOF := <-waitForBodyRead:
+		case bodyEOF := <-waitForBodyRead: // bodyEOFSignal会在resp被成功读取到eof时写入true
 			pc.t.setReqCanceler(rc.req, nil) // before pc might return to idle pool
-			alive = alive &&
-				bodyEOF &&
-				!pc.sawEOF &&
-				pc.wroteRequest() &&
-				tryPutIdleConn(trace)
+			alive = alive && // 之前也是保持链接
+				bodyEOF && // 读取到eof为true
+				!pc.sawEOF && // 看到了eof
+				pc.wroteRequest() && // 写请求完成
+				tryPutIdleConn(trace) // 放回链接完成
 			if bodyEOF {
-				eofc <- struct{}{}
+				eofc <- struct{}{} // 同步 caller读取body到eof 和放回链接 的操作
 			}
-		case <-rc.req.Cancel:
+		case <-rc.req.Cancel: // 请求取消了
 			alive = false
 			pc.t.CancelRequest(rc.req)
-		case <-rc.req.Context().Done():
+		case <-rc.req.Context().Done(): // 请求的ctx已经完成
 			alive = false
 			pc.t.cancelRequest(rc.req, rc.req.Context().Err())
-		case <-pc.closech:
+		case <-pc.closech: // 链接关闭了
 			alive = false
 		}
 
