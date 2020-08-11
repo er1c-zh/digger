@@ -1,0 +1,62 @@
+@startuml transport
+title transport
+
+interface RoundTripper {
+    +RoundTrip(*Request) (*Response, error)
+}
+
+note left
+1. 用来完成一次http事务(Transaction)
+2. 需要并发安全
+3. 只用来实现底层的一次事务
+    1. 不处理高级细节
+    2. 除了消费request和关闭request，不对request进行任何其他操作
+    3. 调用者不可在response关闭前，重用或修改request
+4. 实现一定要关闭body
+end note
+
+class Transport {
+    +Proxy
+    +DialContext
+    +ForceAttemptHTTP2
+    +MaxIdleConns
+    +IdleConnTimeout
+    +TLSHandshakeTimeout
+    +ExpectContinueTimeout
+    +etc
+}
+
+interface io.Reader {}
+
+class persistConn {
+	alt RoundTripper
+	t *Transport
+	cacheKey  connectMethodKey
+	conn      net.Conn
+	tlsState  *tls.ConnectionState
+	br        *bufio.Reader
+	bw        *bufio.Writer
+	nwrite    int64
+	reqch     chan requestAndChan
+	writech   chan writeRequest
+	closech   chan struct{}
+	isProxy   bool
+	sawEOF    bool
+	readLimit int64
+	writeErrCh chan error
+	writeLoopDone chan struct{}
+	idleAt    time.Time
+	idleTimer *time.Timer
+	mu sync.Mutex
+	numExpectedResponses int
+	closed error
+	canceledErr error
+	broken bool
+	reused bool
+	mutateHeaderFunc func(Header)
+}
+
+io.Reader <|-- persistConn
+
+RoundTripper <|-- Transport
+@enduml

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"github.com/er1c-zh/digger/util"
 	"github.com/er1c-zh/go-now/log"
@@ -10,8 +11,8 @@ import (
 	"time"
 )
 
-func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Request) {
-	return func(w http.ResponseWriter, req *http.Request) {
+func (d *Digger) BuildHttpsHandler() func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, __req *http.Request) {
 		// https
 		// try hijack c8n to client
 		wHiJack, ok := w.(http.Hijacker)
@@ -33,7 +34,8 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 			return
 		}
 
-		cert, err := util.SignHost([]string{stripPort(req.Host)})
+		// todo cache certificate
+		cert, err := util.SignHost([]string{stripPort(__req.Host)})
 		if err != nil {
 			log.Error("gen cert fail: %s", err.Error())
 			return
@@ -47,13 +49,14 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 			log.Error("shake hand with client fail: %s", err.Error())
 			return
 		}
-		defer tlsToClient.Close()
+		defer func() {
+			_ = tlsToClient.Close()
+		}()
 		tlsToClientReader := bufio.NewReader(tlsToClient)
 
-		req.URL.Scheme = "https" // force use https
 		conn2Server, err := DefaultConnPool.GetOrCreate(ConnAction{
-			URL:      req.URL,
-			ForceNew: true,
+			URL: util.CopyAndFillURL(__req.URL, true),
+			//ForceNew: true,
 		})
 		if err != nil {
 			log.Error("GetOrCreate fail: %s", err.Error())
@@ -64,15 +67,17 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 		var innerErr error
 		for innerErr == nil {
 			func() {
-				req, err := http.ReadRequest(tlsToClientReader)
+				_req, err := http.ReadRequest(tlsToClientReader)
 				if err != nil {
-					log.Error("ReadRequest fail: %s", err.Error())
+					if err != io.EOF {
+						log.Error("ReadRequest fail: %s", err.Error())
+					}
 					innerErr = err
 					return
 				}
-				reqRecord, err := recordReqFromHttpReq(req)
+				req, reqRecord, err := wrapRequest(_req)
 				if err != nil {
-					log.Error("recordReqFromHttpReq fail: %s", err.Error())
+					log.Error("wrapRequest fail: %s", err.Error())
 					innerErr = err
 					return
 				}
@@ -85,6 +90,19 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 					IsHttps:        true,
 				}
 				defer func() {
+					// req never nil
+					_req, err := http.NewRequest(record.Req.Method, record.Req.URL.String(), bytes.NewReader(record.Req.BodyOrigin))
+					if err != nil {
+						log.Error("NewRequest fail: %s", err.Error())
+					}
+					err = _req.ParseForm()
+					if err != nil {
+						log.Error("ParseForm fail: %s", err.Error())
+					}
+					if record.Resp != nil {
+						record.Resp.Body = string(record.Resp.BodyOrigin)
+					}
+					record.Req.Form = _req.Form
 					d.history.Add(record)
 				}()
 				err = req.Write(conn2Server)
@@ -100,14 +118,10 @@ func (d *Digger) BuildHttpsHandler() func(w http.ResponseWriter, req *http.Reque
 					return
 				}
 				record.Resp, err = recordRespFromHttpResp(resp)
-				//defer func() {
-				//	_ = resp.Body.Close()
-				//}()
+				defer func() {
+					_ = resp.Body.Close()
+				}()
 				if err != nil {
-					if err == io.EOF {
-						_ = tlsToClient.Close()
-						return
-					}
 					log.Error("ReadResponse fail: %s", err.Error())
 					innerErr = err
 					return
