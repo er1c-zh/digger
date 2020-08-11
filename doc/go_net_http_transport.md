@@ -377,9 +377,9 @@ func (pc *persistConn) readLoop() {
 	testHookMu.Unlock()
 
 	alive := true
-	for alive {
+	for alive { // 需要保持连接活跃
 		pc.readLimit = pc.maxHeaderResponseSize()
-		_, err := pc.br.Peek(1)
+		_, err := pc.br.Peek(1) // 检查链接
 
 		pc.mu.Lock()
 		if pc.numExpectedResponses == 0 {
@@ -389,14 +389,14 @@ func (pc *persistConn) readLoop() {
 		}
 		pc.mu.Unlock()
 
-		rc := <-pc.reqch
+		rc := <-pc.reqch // 获取读取任务
 		trace := httptrace.ContextClientTrace(rc.req.Context())
 
 		var resp *Response
 		if err == nil {
-			resp, err = pc.readResponse(rc, trace)
+			resp, err = pc.readResponse(rc, trace) // 尝试读取
 		} else {
-			err = transportReadFromServerError{err}
+			err = transportReadFromServerError{err} // 链接peek出问题
 			closeErr = err
 		}
 
@@ -405,12 +405,15 @@ func (pc *persistConn) readLoop() {
 				err = fmt.Errorf("net/http: server response headers exceeded %d bytes; aborted", pc.maxHeaderResponseSize())
 			}
 
+			// 链接发生问题或者readResponse发生问题
+			// 发送给该读取请求的caller
 			select {
 			case rc.ch <- responseAndError{err: err}:
-			case <-rc.callerGone:
+			case <-rc.callerGone: // gone
 				return
 			}
 			return
+			// 出现异常 返回
 		}
 		pc.readLimit = maxInt64 // effectively no limit for response bodies
 
@@ -418,13 +421,14 @@ func (pc *persistConn) readLoop() {
 		pc.numExpectedResponses--
 		pc.mu.Unlock()
 
-		bodyWritable := resp.bodyIsWritable()
+		bodyWritable := resp.bodyIsWritable() // 用于判断链接是否是被其他流程接管
 		hasBody := rc.req.Method != "HEAD" && resp.ContentLength != 0
 
 		if resp.Close || rc.req.Close || resp.StatusCode <= 199 || bodyWritable {
 			// Don't do keep-alive on error if either party requested a close
 			// or we get an unexpected informational (1xx) response.
 			// StatusCode 100 is already handled above.
+			// 如果 resp关闭、请求关闭、过多的1xx、请求被接管，终止
 			alive = false
 		}
 
@@ -437,18 +441,19 @@ func (pc *persistConn) readLoop() {
 			// to guarantee that persistConn.roundTrip got out of its select
 			// potentially waiting for this persistConn to close.
 			// but after
+			// 先放回链接，后返回结果
 			alive = alive &&
-				!pc.sawEOF &&
-				pc.wroteRequest() &&
-				tryPutIdleConn(trace)
+				!pc.sawEOF && // 没有读取到EOF
+				pc.wroteRequest() && // 链接的写是否无错误的完成
+				tryPutIdleConn(trace) // 尝试放回链接
 
 			if bodyWritable {
 				closeErr = errCallerOwnsConn
 			}
 
 			select {
-			case rc.ch <- responseAndError{res: resp}:
-			case <-rc.callerGone:
+			case rc.ch <- responseAndError{res: resp}: // 放回结果
+			case <-rc.callerGone: // 请求取消
 				return
 			}
 
