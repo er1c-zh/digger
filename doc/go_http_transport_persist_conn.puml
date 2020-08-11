@@ -1,17 +1,17 @@
 @startuml transport.persistConn
 
-actor caller
+actor persistConn.roundTrip
 participant persistConn.writech
 participant persistConn.readch
 participant readLoop
 participant writeLoop
 
-[-> caller++: req
+[-> persistConn.roundTrip++: req
 
-caller -> writeErrCh*: 创建channel
-caller -> persistConn.writech: 向chan中写入一个写入“任务”
-caller -> responseAndErrCh*: 创建channel
-caller -> persistConn.readch: 向chan中写入一个读取“任务”
+persistConn.roundTrip -> writeErrCh*: 创建channel
+persistConn.roundTrip -> persistConn.writech: 向chan中写入一个写入“任务”
+persistConn.roundTrip -> responseAndErrCh*: 创建channel
+persistConn.roundTrip -> persistConn.readch: 向chan中写入一个读取“任务”
 
 ...
 
@@ -23,16 +23,16 @@ writeLoop ->]: 写入数据
 ]-> writeLoop: 底层链接返回写入结果
 writeLoop -> writeErrCh--: 返回异常或者nil（成功写入）
 deactivate writeLoop
-writeErrCh -> caller: 通知异常或nil
+writeErrCh -> persistConn.roundTrip: 通知异常或nil
 destroy writeErrCh
 
 ]-> readLoop: 底层链接返回数据
 readLoop -> responseAndErrCh: 写入response和发生的异常
-responseAndErrCh -> caller: caller读取到response和发生的异常
+responseAndErrCh -> persistConn.roundTrip: persistConn.roundTrip读取到response和发生的异常
 responseAndErrCh -> readLoop: 通过body的包装类中的实现，在response.body被读取完成或异常时，结束
 deactivate readLoop
 
 destroy responseAndErrCh
-caller ->[--: resp, err
+persistConn.roundTrip ->[--: resp, err
 
 @enduml
