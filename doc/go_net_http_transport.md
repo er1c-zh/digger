@@ -12,7 +12,19 @@
     3. 调用者不可在response关闭前，重用或修改request
 4. 实现一定要关闭body
 
-## roundTrip
+## Transport
+
+有趣的事情：
+
+Transport是一个对于chan很好的使用例子。
+
+Transport持有一个LRU的闲置连接池，
+
+1. 调用 ```getConn``` 方法继而调用 ```queueForIdleConn``` 和 ```queueForDial``` 增加获取链接的任务。
+1. 通过gorountine进行拨号，成功之后查找是否有caller等待该链接，通过chan通知 *close(wantConn.Ready)*
+1. 放回的时候也会检查
+
+### roundTrip
 
 默认RoundTripper的roundTrip方法的实现。
 
@@ -148,6 +160,240 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 			req = &newReq
 		}
 	}
+}
+```
+
+### getConn
+
+```golang
+// getConn dials and creates a new persistConn to the target as
+// specified in the connectMethod. This includes doing a proxy CONNECT
+// and/or setting up TLS.  If this doesn't return an error, the persistConn
+// is ready to write requests to.
+// 返回一个persistConn
+// 方法会完成 CONNECT 交互 和 TLS的初始化（如果需要的话）
+// 当err为nil时，persistConn处于可以写入请求的状态
+func (t *Transport) getConn(treq *transportRequest, cm connectMethod) (pc *persistConn, err error) {
+	req := treq.Request
+	trace := treq.trace
+	ctx := req.Context()
+	if trace != nil && trace.GetConn != nil {
+		trace.GetConn(cm.addr())
+	}
+
+	w := &wantConn{
+		cm:         cm, // 链接的要求
+		key:        cm.key(),
+		ctx:        ctx,
+		ready:      make(chan struct{}, 1),
+		beforeDial: testHookPrePendingDial,
+		afterDial:  testHookPostPendingDial,
+	}
+	defer func() {
+		if err != nil {
+			w.cancel(t, err)
+		}
+	}()
+
+	// Queue for idle connection.
+	if delivered := t.queueForIdleConn(w); delivered { // 尝试从idleLRU查询链接并返回给caller
+		// 成功返回
+		pc := w.pc
+		// Trace only for HTTP/1.
+		// HTTP/2 calls trace.GotConn itself.
+		if pc.alt == nil && trace != nil && trace.GotConn != nil {
+			trace.GotConn(pc.gotIdleConnTrace(pc.idleAt))
+		}
+		// set request canceler to some non-nil function so we
+		// can detect whether it was cleared between now and when
+		// we enter roundTrip
+		t.setReqCanceler(req, func(error) {})
+		return pc, nil
+	}
+
+	cancelc := make(chan error, 1)
+	t.setReqCanceler(req, func(err error) { cancelc <- err })
+
+	// Queue for permission to dial.
+	t.queueForDial(w) // 等待拨号
+
+	// Wait for completion or cancellation.
+	// 等待拨号结果或取消
+	select {
+	case <-w.ready:
+		// Trace success but only for HTTP/1.
+		// HTTP/2 calls trace.GotConn itself.
+		if w.pc != nil && w.pc.alt == nil && trace != nil && trace.GotConn != nil {
+			trace.GotConn(httptrace.GotConnInfo{Conn: w.pc.conn, Reused: w.pc.isReused()})
+		}
+		if w.err != nil {
+			// If the request has been cancelled, that's probably
+			// what caused w.err; if so, prefer to return the
+			// cancellation error (see golang.org/issue/16049).
+			select {
+			case <-req.Cancel:
+				return nil, errRequestCanceledConn
+			case <-req.Context().Done():
+				return nil, req.Context().Err()
+			case err := <-cancelc:
+				if err == errRequestCanceled {
+					err = errRequestCanceledConn
+				}
+				return nil, err
+			default:
+				// return below
+			}
+		}
+		return w.pc, w.err
+	case <-req.Cancel:
+		return nil, errRequestCanceledConn
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	case err := <-cancelc:
+		if err == errRequestCanceled {
+			err = errRequestCanceledConn
+		}
+		return nil, err
+	}
+}
+```
+
+### queueForIdleConn
+
+尝试获取闲置的链接
+
+```golang
+// queueForIdleConn queues w to receive the next idle connection for w.cm.
+// As an optimization hint to the caller, queueForIdleConn reports whether
+// it successfully delivered an already-idle connection.
+func (t *Transport) queueForIdleConn(w *wantConn) (delivered bool) {
+	if t.DisableKeepAlives {
+		return false
+	}
+
+	t.idleMu.Lock()
+	defer t.idleMu.Unlock()
+
+	// Stop closing connections that become idle - we might want one.
+	// (That is, undo the effect of t.CloseIdleConnections.)
+	t.closeIdle = false
+
+	if w == nil {
+		// Happens in test hook.
+		return false
+	}
+
+	// If IdleConnTimeout is set, calculate the oldest
+	// persistConn.idleAt time we're willing to use a cached idle
+	// conn.
+	var oldTime time.Time
+	if t.IdleConnTimeout > 0 {
+		oldTime = time.Now().Add(-t.IdleConnTimeout)
+	}
+
+	// Look for most recently-used idle connection.
+	if list, ok := t.idleConn[w.key]; ok { // 从lru中查找
+		stop := false
+		delivered := false
+		for len(list) > 0 && !stop { // 遍历
+			pconn := list[len(list)-1] // 查找最近使用过的链接
+
+			// See whether this connection has been idle too long, considering
+			// only the wall time (the Round(0)), in case this is a laptop or VM
+			// coming out of suspend with previously cached idle connections.
+			// 检查是否闲置太长时间
+			tooOld := !oldTime.IsZero() && pconn.idleAt.Round(0).Before(oldTime)
+			if tooOld {
+				// Async cleanup. Launch in its own goroutine (as if a
+				// time.AfterFunc called it); it acquires idleMu, which we're
+				// holding, and does a synchronous net.Conn.Close.
+				go pconn.closeConnIfStillIdle()
+			}
+			if pconn.isBroken() || tooOld {
+				// 如果链接（被readLoop）标记为坏的或者闲置太长时间
+				// 从清理掉
+				// If either persistConn.readLoop has marked the connection
+				// broken, but Transport.removeIdleConn has not yet removed it
+				// from the idle list, or if this persistConn is too old (it was
+				// idle too long), then ignore it and look for another. In both
+				// cases it's already in the process of being closed.
+				list = list[:len(list)-1]
+				continue
+			}
+			delivered = w.tryDeliver(pconn, nil) // 尝试投递链接
+			if delivered { // 投递成功
+				if pconn.alt != nil {
+					// http2可以多个client复用链接 所以保留在idle列表中
+					// HTTP/2: multiple clients can share pconn.
+					// Leave it in the list.
+				} else {
+					// 移除该链接
+					// HTTP/1: only one client can use pconn.
+					// Remove it from the list.
+					t.idleLRU.remove(pconn)
+					list = list[:len(list)-1]
+				}
+			}
+			stop = true // 终止循环 已经尝试过投递了，结果会返回给caller
+		}
+		// 如果该key的链接已经没有闲置的了，清除该列表（防止leak）
+		if len(list) > 0 {
+			t.idleConn[w.key] = list
+		} else {
+			delete(t.idleConn, w.key)
+		}
+		if stop {
+			// 如果找到了一个idle链接，且尝试过投递给链接的请求者，那么返回结果
+			return delivered
+		}
+	}
+
+	// Register to receive next connection that becomes idle.
+	// 如果没有闲置链接
+	// 记录对于该key的请求
+	if t.idleConnWait == nil {
+		t.idleConnWait = make(map[connectMethodKey]wantConnQueue)
+	}
+	q := t.idleConnWait[w.key]
+	q.cleanFront()
+	q.pushBack(w)
+	t.idleConnWait[w.key] = q
+	return false
+}
+```
+
+### queueForDial
+
+```golang
+// queueForDial queues w to wait for permission to begin dialing.
+// Once w receives permission to dial, it will do so in a separate goroutine.
+// 排队拨号
+func (t *Transport) queueForDial(w *wantConn) {
+	w.beforeDial()
+	if t.MaxConnsPerHost <= 0 { // 如果不限制每个host并发数，直接拨号
+		go t.dialConnFor(w)
+		return
+	}
+
+	t.connsPerHostMu.Lock()
+	defer t.connsPerHostMu.Unlock()
+
+	if n := t.connsPerHost[w.key]; n < t.MaxConnsPerHost {
+		if t.connsPerHost == nil {
+			t.connsPerHost = make(map[connectMethodKey]int)
+		}
+		t.connsPerHost[w.key] = n + 1
+		go t.dialConnFor(w) // 如果没达到限制，拨号
+		return
+	}
+
+	if t.connsPerHostWait == nil {
+		t.connsPerHostWait = make(map[connectMethodKey]wantConnQueue)
+	}
+	q := t.connsPerHostWait[w.key]
+	q.cleanFront() // 清理不在等待的wantConn
+	q.pushBack(w) // 增加
+	t.connsPerHostWait[w.key] = q
 }
 ```
 
